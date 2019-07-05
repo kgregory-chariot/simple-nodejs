@@ -7,6 +7,7 @@ const HOST = '0.0.0.0';
 
 const app = express();
 app.get('/', (req, res) => {
+  console.log(`received request from ${req.ip}`);
   res.send('Hello, visitor from ' + req.ip + '\n');
 });
 
