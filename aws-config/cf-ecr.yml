@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Creates an ECR repository for the example application"
+
+Parameters: 
+  RepositoryName: 
+    Description:  "The name of the repository to create"
+    Type:         String
+    Default:      "simple-nodejs"
+
+Resources:
+  ECRRepository:
+    Type:                         "AWS::ECR::Repository"
+    Properties: 
+      RepositoryName:             !Ref RepositoryName
+      LifecyclePolicy: 
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "description":    "Remove old untagged versions",
+                "rulePriority":   10,
+                "selection": {
+                  "tagStatus":    "untagged",
+                  "countType":    "sinceImagePushed",
+                  "countNumber":  3,
+                  "countUnit":    "days"
+                },
+                "action": {
+                  "type":         "expire"
+                }
+              }
+            ]
+          }
