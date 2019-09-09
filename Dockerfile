@@ -15,9 +15,9 @@ RUN npm install
 
 COPY src ./src
 
-EXPOSE 8080
-
-CMD [ "node", "src/server.js" ]
-
 # per https://github.com/nodejs/docker-node/blob/master/docs/BestPractices.md#non-root-user
 USER node
+
+EXPOSE 3000
+
+CMD [ "node", "src/server.js" ]
