@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion:               "2010-09-09"
+Description:                            "Simple deployment infrastructure"
+
+Parameters:
+
+  VpcId:
+    Description:                        "VPC where the environment will be deployed"
+    Type:                               String
+    Default:                            "vpc-d7d2a2ad"
+  Subnets:
+    Description:                        "Public subnets used for ECS placement"
+    Type:                               CommaDelimitedList
+    Default:                            "subnet-fd9fbb9a,subnet-fb3517d5"
+  ImageName:
+    Description:                        "Name of the Docker image to deploy"
+    Type:                               String
+    Default:                            "hello_world"
+  ImageTag:
+    Description:                        "Version tag of the Docker images"
+    Type:                               String
+    Default:                            "1"
+    
+
+Resources:
+
+  ##
+  ## Security Groups
+  ##
+
+  LoadBalancerSecurityGroup:
+    Type:                               "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName:                        !Sub "${AWS::StackName}-LoadBalancerSecurityGroup"
+      GroupDescription:                 "Allows ingress to the elastic load balancer"
+      VpcId:                            !Ref VpcId
+      SecurityGroupIngress:
+        -
+          IpProtocol:                   "tcp"
+          CidrIp:                       "0.0.0.0/0"
+          FromPort:                     80
+          ToPort:                       80
+        -
+          IpProtocol:                   "tcp"
+          CidrIp:                       "0.0.0.0/0"
+          FromPort:                     443
+          ToPort:                       443
+
+
+  ApplicationSecurityGroup:
+    Type:                               "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupName:                        !Sub "${AWS::StackName}-ApplicationSecurityGroup"
+      GroupDescription:                 "Allows access to the application nodes (nominally from load balancer)"
+      VpcId:                            !Ref VpcId
+      SecurityGroupIngress:
+        -
+          Description:                  "Access from Load Balancer"
+          IpProtocol:                   "tcp"
+          FromPort:                     3000
+          ToPort:                       3000
+          SourceSecurityGroupId:        !GetAtt LoadBalancerSecurityGroup.GroupId
+        -
+          Description:                  "Access from Chariot office (for debugging)"
+          IpProtocol:                   "tcp"
+          CidrIp:                       "173.161.227.121/32"
+          FromPort:                     0
+          ToPort:                       65535
+
+  ##
+  ## ECS Cluster
+  ##
+
+  ECSCluster:
+    Type:                               "AWS::ECS::Cluster"
+    Properties:
+      ClusterName:                      !Sub "${AWS::StackName}"
+
+
+  ExecutionRole:
+    Type:                               "AWS::IAM::Role"
+    Properties:
+      RoleName:                         !Sub "${AWS::StackName}-ExecutionRole"
+      Path:                             "/web-ui/"
+      ManagedPolicyArns:                [
+                                        "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+                                        ]
+      AssumeRolePolicyDocument:
+        Version:                        "2012-10-17"
+        Statement:
+          -
+            Effect:                     "Allow"
+            Principal:                  { Service: ["ecs-tasks.amazonaws.com"] }
+            Action:                     [ "sts:AssumeRole" ]
+
+
+  LogDestination:
+    Type:                               "AWS::Logs::LogGroup"
+    Properties:
+      LogGroupName:                     !Sub "/ecs/${AWS::StackName}"
+      RetentionInDays:                  7
+
+
+  TaskDefinition:
+    Type:                               "AWS::ECS::TaskDefinition"
+    Properties:
+      Family:                           !Sub "${AWS::StackName}"
+      RequiresCompatibilities:          [ "FARGATE" ]
+      NetworkMode:                      "awsvpc"
+      Cpu:                              256
+      Memory:                           512
+      ExecutionRoleArn:                 !GetAtt ExecutionRole.Arn
+      ContainerDefinitions:
+        -
+          Name:                         !Sub "${AWS::StackName}"
+          Image:                        !Sub "810107213182.dkr.ecr.us-east-1.amazonaws.com/${ImageName}:${ImageTag}"
+          Essential:                    true
+          LogConfiguration:
+            LogDriver:                  "awslogs"
+            Options:
+              awslogs-region:           !Ref AWS::Region
+              awslogs-group:            !Ref LogDestination
+              awslogs-stream-prefix:    "Example"
+          PortMappings:                 [ {ContainerPort: 3000} ]
+
+
+  ECSLoadBalancer:
+    Type:                               "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Name:                             !Sub "${AWS::StackName}"
+      Type:                             "application"
+      Scheme:                           "internet-facing"
+      IpAddressType:                    "ipv4"
+      Subnets:                          !Ref Subnets
+      SecurityGroups:                   [ !Ref LoadBalancerSecurityGroup ]
+
+
+  ECSLoadBalancerHTTPListener:
+    Type:                               "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      LoadBalancerArn:                  !Ref ECSLoadBalancer
+      Protocol:                         "HTTP"
+      Port:                             80
+      DefaultActions:
+        -
+          Type:                         "forward"
+          Order:                        10
+          TargetGroupArn:               !Ref ECSLoadBalancerTargetGroup
+
+
+  ECSLoadBalancerTargetGroup:
+    Type:                               "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Properties:
+      Name:                             !Sub "${AWS::StackName}"
+      VpcId:                            !Ref VpcId
+      Protocol:                         "HTTP"
+      Port:                             3000
+      HealthCheckPath:                  "/healthcheck"
+      #Matcher:                           # TODO
+      TargetType:                       "ip"
+      TargetGroupAttributes:
+        -
+          Key:                          "deregistration_delay.timeout_seconds"
+          Value:                        "30"
+
+
+  ECSService:
+    Type:                               "AWS::ECS::Service"
+    Properties:
+      ServiceName:                      !Sub "${AWS::StackName}"
+      TaskDefinition:                   !Ref TaskDefinition
+      LaunchType:                       "FARGATE"
+      Cluster:                          !GetAtt ECSCluster.Arn
+      DesiredCount:                     2
+      SchedulingStrategy:               "REPLICA"
+      DeploymentConfiguration:
+        MaximumPercent:                 200
+        MinimumHealthyPercent:          100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp:               "ENABLED"
+          SecurityGroups:               [ !Ref ApplicationSecurityGroup ]
+          Subnets:                      !Ref Subnets
+      LoadBalancers:
+        -
+          ContainerName:                !Sub "${AWS::StackName}"
+          ContainerPort:                3000
+          TargetGroupArn:               !Ref ECSLoadBalancerTargetGroup
+      HealthCheckGracePeriodSeconds:    180
+
